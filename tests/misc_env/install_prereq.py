@@ -25,15 +25,15 @@ def run(**kw):
     skip_subscription = config.get('skip_subscription', False)
     repo = config.get('add-repo', False)
     rhbuild = config.get('rhbuild')
-
+    is_live = config.get('is_live', False)
     with parallel() as p:
         for ceph in ceph_nodes:
-            p.spawn(install_prereq, ceph, 1800, skip_subscription, repo, rhbuild)
+            p.spawn(install_prereq, ceph, 1800, skip_subscription, repo, rhbuild, is_live)
             time.sleep(20)
     return 0
 
 
-def install_prereq(ceph, timeout=1800, skip_subscription=False, repo=False, rhbuild=None):
+def install_prereq(ceph, timeout=1800, skip_subscription=False, repo=False, rhbuild=None, is_live=False):
     log.info("Waiting for cloud config to complete on " + ceph.hostname)
     ceph.exec_command(cmd='while [ ! -f /ceph-qa-ready ]; do sleep 15; done')
     log.info("cloud config to completed on " + ceph.hostname)
@@ -51,7 +51,7 @@ def install_prereq(ceph, timeout=1800, skip_subscription=False, repo=False, rhbu
         # https://bugzilla.redhat.com/show_bug.cgi?id=1748015
         ceph.exec_command(cmd='sudo systemctl restart NetworkManager.service')
         if not skip_subscription:
-            setup_subscription_manager(ceph)
+            setup_subscription_manager(ceph, is_live)
             enable_rhel_rpms(ceph, distro_ver)
         if repo:
             setup_addition_repo(ceph, repo)
@@ -80,18 +80,25 @@ def setup_addition_repo(ceph, repo):
     ceph.exec_command(sudo=True, cmd='yum update metadata', check_ec=False)
 
 
-def setup_subscription_manager(ceph, timeout=1800):
+def setup_subscription_manager(ceph, timeout=1800, is_live=False):
     timeout = datetime.timedelta(seconds=timeout)
     starttime = datetime.datetime.now()
     log.info(
         "Subscribing {ip} host with {timeout} timeout".format(ip=ceph.ip_address, timeout=timeout))
     while True:
         try:
-            ceph.exec_command(
-                cmd='sudo subscription-manager --force register  '
-                    '--serverurl=subscription.rhsm.stage.redhat.com:443/subscription  '
-                    '--baseurl=https://cdn.redhat.com --username=rhcsuser --password=rhcsuser',
-                timeout=720)
+            command = "sudo subscription-manager --force register --username={username} --password={password} "
+            if is_live:
+                credential = get_cephci_config().get('cdn_credentials')
+                command = command.format(username=credential.get('username'), password=credential.get('username'))
+
+            else:
+                credential = get_cephci_config().get('stage_credentials')
+                command += "--serverurl=subscription.rhsm.stage.redhat.com:443/subscription " \
+                           "--baseurl=https://cdn.redhat.com "
+                command = command.format(username=credential.get('username'), password=credential.get('username'))
+
+            ceph.exec_command(cmd=command, timeout=720)
 
             ceph.exec_command(cmd='sudo subscription-manager attach '
                                   '--pool $(sudo subscription-manager list --all --available --pool-only | head -1)',
